@@ -1,0 +1,394 @@
+import * as fs from 'fs';
+import * as path from 'path';
+
+interface FactoryResetConfig {
+  dataDirectory: string;
+  configDirectory: string;
+  cacheDirectory: string;
+  logDirectory: string;
+  databasePath?: string;
+  defaultConfigPath?: string;
+  confirmationRequired?: boolean;
+}
+
+interface ResetResult {
+  success: boolean;
+  timestamp: string;
+  itemsCleared: {
+    userDataRemoved: boolean;
+    settingsReset: boolean;
+    cacheCleared: boolean;
+    databaseReset: boolean;
+    defaultsRestored: boolean;
+  };
+  errors: string[];
+}
+
+class FactoryResetManager {
+  private config: FactoryResetConfig;
+  private logger: Logger;
+
+  constructor(config: FactoryResetConfig) {
+    this.config = config;
+    this.logger = new Logger(config.logDirectory);
+  }
+
+  /**
+   * Perform complete factory reset
+   */
+  async performFactoryReset(
+    confirmationCallback?: () => Promise<boolean>
+  ): Promise<ResetResult> {
+    const result: ResetResult = {
+      success: false,
+      timestamp: new Date().toISOString(),
+      itemsCleared: {
+        userDataRemoved: false,
+        settingsReset: false,
+        cacheCleared: false,
+        databaseReset: false,
+        defaultsRestored: false,
+      },
+      errors: [],
+    };
+
+    try {
+      // Request confirmation if required
+      if (this.config.confirmationRequired && confirmationCallback) {
+        const confirmed = await confirmationCallback();
+        if (!confirmed) {
+          this.logger.log('Factory reset cancelled by user');
+          return result;
+        }
+      }
+
+      this.logger.log('Starting factory reset...');
+
+      // Step 1: Clear user data
+      try {
+        await this.clearUserData();
+        result.itemsCleared.userDataRemoved = true;
+        this.logger.log('✓ User data cleared');
+      } catch (error) {
+        const errorMsg = `Failed to clear user data: ${error}`;
+        result.errors.push(errorMsg);
+        this.logger.error(errorMsg);
+      }
+
+      // Step 2: Reset settings to defaults
+      try {
+        await this.resetSettings();
+        result.itemsCleared.settingsReset = true;
+        this.logger.log('✓ Settings reset to defaults');
+      } catch (error) {
+        const errorMsg = `Failed to reset settings: ${error}`;
+        result.errors.push(errorMsg);
+        this.logger.error(errorMsg);
+      }
+
+      // Step 3: Clear cache
+      try {
+        await this.clearCache();
+        result.itemsCleared.cacheCleared = true;
+        this.logger.log('✓ Cache cleared');
+      } catch (error) {
+        const errorMsg = `Failed to clear cache: ${error}`;
+        result.errors.push(errorMsg);
+        this.logger.error(errorMsg);
+      }
+
+      // Step 4: Reset database
+      if (this.config.databasePath) {
+        try {
+          await this.resetDatabase();
+          result.itemsCleared.databaseReset = true;
+          this.logger.log('✓ Database reset');
+        } catch (error) {
+          const errorMsg = `Failed to reset database: ${error}`;
+          result.errors.push(errorMsg);
+          this.logger.error(errorMsg);
+        }
+      }
+
+      // Step 5: Restore default files
+      if (this.config.defaultConfigPath) {
+        try {
+          await this.restoreDefaults();
+          result.itemsCleared.defaultsRestored = true;
+          this.logger.log('✓ Default files restored');
+        } catch (error) {
+          const errorMsg = `Failed to restore defaults: ${error}`;
+          result.errors.push(errorMsg);
+          this.logger.error(errorMsg);
+        }
+      }
+
+      result.success = result.errors.length === 0;
+      this.logger.log(
+        `Factory reset completed. Success: ${result.success}`,
+        result
+      );
+    } catch (error) {
+      const errorMsg = `Unexpected error during factory reset: ${error}`;
+      result.errors.push(errorMsg);
+      this.logger.error(errorMsg);
+    }
+
+    return result;
+  }
+
+  /**
+   * Clear all user data
+   */
+  private async clearUserData(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!fs.existsSync(this.config.dataDirectory)) {
+        resolve();
+        return;
+      }
+
+      try {
+        this.removeDirectoryContents(this.config.dataDirectory);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Reset settings to defaults
+   */
+  private async resetSettings(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      try {
+        if (fs.existsSync(this.config.configDirectory)) {
+          this.removeDirectoryContents(this.config.configDirectory);
+        }
+
+        // Create default settings file
+        const defaultSettings = {
+          version: '1.0.0',
+          language: 'en',
+          timezone: 'UTC',
+          theme: 'light',
+          autoUpdate: true,
+          debugMode: false,
+          createdAt: new Date().toISOString(),
+        };
+
+        fs.mkdirSync(this.config.configDirectory, { recursive: true });
+        fs.writeFileSync(
+          path.join(this.config.configDirectory, 'settings.json'),
+          JSON.stringify(defaultSettings, null, 2)
+        );
+
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Clear cache directory
+   */
+  private async clearCache(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!fs.existsSync(this.config.cacheDirectory)) {
+        resolve();
+        return;
+      }
+
+      try {
+        this.removeDirectoryContents(this.config.cacheDirectory);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Reset database to initial state
+   */
+  private async resetDatabase(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      try {
+        if (!this.config.databasePath) {
+          resolve();
+          return;
+        }
+
+        // Remove existing database
+        if (fs.existsSync(this.config.databasePath)) {
+          fs.unlinkSync(this.config.databasePath);
+        }
+
+        // Initialize empty database schema
+        const emptyDatabase = {
+          version: '1.0.0',
+          tables: [],
+          createdAt: new Date().toISOString(),
+          lastReset: new Date().toISOString(),
+        };
+
+        fs.writeFileSync(
+          this.config.databasePath,
+          JSON.stringify(emptyDatabase, null, 2)
+        );
+
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Restore default files and configuration
+   */
+  private async restoreDefaults(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      try {
+        if (
+          !this.config.defaultConfigPath ||
+          !fs.existsSync(this.config.defaultConfigPath)
+        ) {
+          resolve();
+          return;
+        }
+
+        // Copy default files to config directory
+        fs.mkdirSync(this.config.configDirectory, { recursive: true });
+        this.copyDirectory(
+          this.config.defaultConfigPath,
+          this.config.configDirectory
+        );
+
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Helper: Remove all contents of a directory
+   */
+  private removeDirectoryContents(dir: string): void {
+    if (!fs.existsSync(dir)) {
+      return;
+    }
+
+    const files = fs.readdirSync(dir);
+    for (const file of files) {
+      const filePath = path.join(dir, file);
+      const stat = fs.statSync(filePath);
+
+      if (stat.isDirectory()) {
+        this.removeDirectoryContents(filePath);
+        fs.rmdirSync(filePath);
+      } else {
+        fs.unlinkSync(filePath);
+      }
+    }
+  }
+
+  /**
+   * Helper: Copy directory recursively
+   */
+  private copyDirectory(src: string, dest: string): void {
+    if (!fs.existsSync(dest)) {
+      fs.mkdirSync(dest, { recursive: true });
+    }
+
+    const files = fs.readdirSync(src);
+    for (const file of files) {
+      const srcPath = path.join(src, file);
+      const destPath = path.join(dest, file);
+      const stat = fs.statSync(srcPath);
+
+      if (stat.isDirectory()) {
+        this.copyDirectory(srcPath, destPath);
+      } else {
+        fs.copyFileSync(srcPath, destPath);
+      }
+    }
+  }
+}
+
+/**
+ * Simple Logger class
+ */
+class Logger {
+  private logDirectory: string;
+  private logFile: string;
+
+  constructor(logDirectory: string) {
+    this.logDirectory = logDirectory;
+    this.logFile = path.join(logDirectory, 'factory-reset.log');
+
+    // Ensure log directory exists
+    if (!fs.existsSync(logDirectory)) {
+      fs.mkdirSync(logDirectory, { recursive: true });
+    }
+  }
+
+  log(message: string, data?: any): void {
+    const timestamp = new Date().toISOString();
+    const logEntry = `[${timestamp}] INFO: ${message}\n`;
+
+    console.log(logEntry);
+    fs.appendFileSync(this.logFile, logEntry);
+
+    if (data) {
+      const dataStr = JSON.stringify(data, null, 2) + '\n';
+      fs.appendFileSync(this.logFile, dataStr);
+    }
+  }
+
+  error(message: string, data?: any): void {
+    const timestamp = new Date().toISOString();
+    const logEntry = `[${timestamp}] ERROR: ${message}\n`;
+
+    console.error(logEntry);
+    fs.appendFileSync(this.logFile, logEntry);
+
+    if (data) {
+      const dataStr = JSON.stringify(data, null, 2) + '\n';
+      fs.appendFileSync(this.logFile, dataStr);
+    }
+  }
+}
+
+// Example usage:
+const resetManager = new FactoryResetManager({
+  dataDirectory: './data',
+  configDirectory: './config',
+  cacheDirectory: './cache',
+  logDirectory: './logs',
+  databasePath: './data/database.json',
+  defaultConfigPath: './defaults',
+  confirmationRequired: true,
+});
+
+// Execute factory reset with confirmation
+(async () => {
+  const confirmed = await new Promise<boolean>((resolve) => {
+    console.log('⚠️  WARNING: This will reset the device to factory settings.');
+    console.log('All user data, settings, cache, and database will be cleared.');
+    // In a real embedded system, you'd prompt the user here
+    resolve(true); // Auto-confirm for demo
+  });
+
+  if (confirmed) {
+    const result = await resetManager.performFactoryReset(() =>
+      Promise.resolve(true)
+    );
+    console.log('\n=== Factory Reset Result ===');
+    console.log(JSON.stringify(result, null, 2));
+  }
+})();
+
+export { FactoryResetManager, Logger, FactoryResetConfig, ResetResult };
